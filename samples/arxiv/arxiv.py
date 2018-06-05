@@ -88,7 +88,9 @@ class ArxivConfig(Config):
     GPU_COUNT = 1
 
     # Number of classes (including background)
-    NUM_CLASSES = 1 + 6  #table, row, col, content_line, caption, cell 
+    NUM_CLASSES = 1 + 33 #all except content line
+
+#  #table, row, col, content_line, caption, cell 
 
     MAX_GT_INSTANCES = 400
 
@@ -120,9 +122,57 @@ class ArxivDataset(utils.Dataset):
         image_root_path = os.path.join(dataset_dir, 'images')
         jsons_root_path = os.path.join(dataset_dir, 'jsons')
 
+        categories = [ 
+            {'id': 1, 'name': 'table', 'supercategory': 'section'},
+            {'id': 2, 'name': 'table_caption', 'supercategory': 'table'},
+            {'id': 3, 'name': 'table_cell', 'supercategory': 'table'},
+            {'id': 4, 'name': 'table_row', 'supercategory': 'table'},
+            {'id': 5, 'name': 'table_col', 'supercategory': 'table'},
+            {'id': 6, 'name': 'figure', 'supercategory': 'section'},
+            {'id': 7, 'name': 'figure_caption', 'supercategory': 'figure'},
+            {'id': 8, 'name': 'figure_graphic', 'supercategory': 'figure'},
+            {'id': 9, 'name': 'title', 'supercategory': 'meta_section'},
+            {'id': 10, 'name': 'section', 'supercategory': 'section'},
+            {'id': 11, 'name': 'header', 'supercategory': 'section'},
+            {'id': 12, 'name': 'subsection', 'supercategory': 'document'},
+            {'id': 13, 'name': 'subsubsection', 'supercategory': 'document'},
+            {'id': 14, 'name': 'paragraph', 'supercategory': 'document'},
+            {'id': 15, 'name': 'subparagraph', 'supercategory': 'document'},
+            {'id': 16, 'name': 'part', 'supercategory': 'document'},
+            {'id': 17, 'name': 'content', 'supercategory': 'document'},
+            {'id': 18, 'name': 'content_line', 'supercategory': 'content_block'},
+            {'id': 19, 'name': 'content_block', 'supercategory': 'section'},
+            {'id': 20, 'name': 'authors', 'supercategory': 'meta_section'},
+            {'id': 21, 'name': 'author', 'supercategory': 'author'},
+            {'id': 22, 'name': 'affiliations', 'supercategory': 'meta_section'},
+            {'id': 23, 'name': 'affiliation', 'supercategory': 'affiliations'},
+            {'id': 24, 'name': 'abstract', 'supercategory': 'meta_section'},
+            {'id': 25, 'name': 'date', 'supercategory': 'meta_section'},
+            {'id': 26, 'name': 'bibliography', 'supercategory': 'document'},
+            {'id': 27, 'name': 'bibliography_item', 'supercategory': 'bibliography'},
+            {'id': 28, 'name': 'equation', 'supercategory': 'document'},
+            {'id': 29, 'name': 'equation_element', 'supercategory': 'equation'},
+            {'id': 30, 'name': 'equation_label', 'supercategory': 'equation'},
+            {'id': 31, 'name': 'meta_section', 'supercategory': 'document'},
+            {'id': 32, 'name': 'enumerate', 'supercategory': 'document'},
+            {'id': 33, 'name': 'itemize', 'supercategory': 'document'},
+            {'id': 34, 'name': 'page_nr', 'supercategory': 'document'}
+            ]
+	
+        all_ids = []
+        all_names = []
+        self.allowed_class_ids = []
+        self.allowed_class_names = []
+        for cat in categories:
+            all_names.append(cat['name'])
+            all_ids.append(cat['id'])
+            if	cat['name'] != 'content_line':
+                self.allowed_class_ids.append(cat['id'])
+                self.allowed_class_names.append(cat['name'])
 
-        allowed_class_ids = [1,2,3,4,5,18]
-        allowed_class_names = {1:'table',2:'table_caption',3:'table_cell',4:'table_row',5:'table_col',18:'content_line'}
+
+#        allowed_class_ids = [x for x in all_ids in 
+#        allowed_class_names = {1:'table',2:'table_caption',3:'table_cell',4:'table_row',5:'table_col',18:'content_line'}
 
         with open(dataset_mapping_json, 'r') as fp:
             docs_and_pages = json.load(fp)
@@ -130,17 +180,38 @@ class ArxivDataset(utils.Dataset):
 
         # Load all classes or a subset?
         if not class_ids:
-            class_ids = sorted(allowed_class_ids)
+            class_ids = sorted(self.allowed_class_ids)
        
         self.all_ann_json_paths = [] 
         self.all_img_json_paths = []
+        self.all_img_dicts = []
         self.all_image_paths = []
         self.page_nrs = []
-        for doc_id, pages in docs_and_pages:
-            for page in pages:
-                self.all_ann_json_paths.append(os.path.join(jsons_root_path, doc_id, 'table_anns.json'))
-                self.all_img_json_paths.append(os.path.join(jsons_root_path, doc_id, 'imgs.json'))
+        progress_count = 0
+        for doc_id, _ in docs_and_pages:
+            all_doc_images = os.listdir(os.path.join(image_root_path, doc_id))
+            #print('all doc images: {}'.format(all_doc_images))
+            all_doc_pages = [int(x.split('_page')[1][0:3]) for x in all_doc_images]
+            #print('all doc pages: {}'.format(all_doc_pages))
+            for page in all_doc_pages:
+                ann_json_path = os.path.join(jsons_root_path, doc_id, 'anns.json')
+                img_json_path = os.path.join(jsons_root_path, doc_id, 'imgs.json')
+                with open(img_json_path, 'r') as fp:
+                    if progress_count%500 == 0:
+                        logger.info("Loaded {} images".format(progress_count))
+                    progress_count += 1
+                    json_dict = json.load(fp)
+                    all_img_dicts = [x for x in json_dict if x['page'] == page]
+                    if len(all_img_dicts) == 0: #faulty json, missing page entry
+                        logger.info('skipping document {} page {}: faulty img json'.format(doc_id, page))
+                        continue
+                    img_dict = all_img_dicts[0]
+
+                self.all_ann_json_paths.append(ann_json_path)
+                self.all_img_json_paths.append(img_json_path)
+                self.all_img_dicts.append(img_dict)
                 img_name = doc_id + "_page{0:0=3d}_feature.png".format(page)
+                img_path = os.path.join(image_root_path, doc_id, img_name)
                 self.all_image_paths.append(os.path.join(image_root_path, doc_id, img_name))
                 self.page_nrs.append(page)
         image_ids = range(len(self.all_image_paths))
@@ -149,16 +220,14 @@ class ArxivDataset(utils.Dataset):
 
         # Add classes
         for i in class_ids:
-            self.add_class("arxiv", i, allowed_class_names[i])
+            self.add_class("arxiv", i, self.allowed_class_names[self.allowed_class_ids.index(i)])
 
         # Add images
         for i in image_ids:
-            if i%500 == 0:
-                logger.info("Loaded {} of {} images".format(i, len(image_ids)))
-            page = self.page_nrs[i]
-            with open(self.all_img_json_paths[i], 'r') as fp:
-                json_dict = json.load(fp)
-                img_dict = [x for x in json_dict if x['page'] == page][0]
+#            if i%500 == 0:
+#                logger.info("Loaded {} of {} images".format(i, len(image_ids)))
+            #page = self.page_nrs[i]
+            img_dict = self.all_img_dicts[i]
             self.add_image(
                 "arxiv", image_id=i,
                 path=self.all_image_paths[i],
@@ -192,7 +261,7 @@ class ArxivDataset(utils.Dataset):
             json_dict = json.load(fp)
             #logger.info("page: {}, json dict {} has {} anns for image id: {}".format(page, self.all_ann_json_paths[image_id], len(json_dict), image_id))
             
-            annotations = [x for x in json_dict if x['page'] == page]
+            annotations = [x for x in json_dict if x['page'] == page and x['category_name'] in self.allowed_class_names]
         #logger.info("fetched {} anns for image id: {}".format(len(annotations), image_id))
 
         # Build mask of shape [height, width, instance_count] and list
@@ -423,9 +492,9 @@ if __name__ == '__main__':
 
     # Load weights
     print("Loading weights ", model_path)
-    #model.load_weights(model_path, by_name=True)
-    model.load_weights(model_path, by_name=True, exclude=["mrcnn_class_logits", \
-        "mrcnn_bbox_fc", "mrcnn_bbox", "mrcnn_mask"])
+    model.load_weights(model_path, by_name=True)
+#    model.load_weights(model_path, by_name=True, exclude=["mrcnn_class_logits", \
+#        "mrcnn_bbox_fc", "mrcnn_bbox", "mrcnn_mask"])
 
     # Train or evaluate
     if args.command == "train":
@@ -452,7 +521,7 @@ if __name__ == '__main__':
         print("Training network heads")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=40,
+                    epochs=180,
                     layers='heads',
                     augmentation=augmentation)
 
@@ -461,7 +530,7 @@ if __name__ == '__main__':
         print("Fine tune Resnet stage 4 and up")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE,
-                    epochs=120,
+                    epochs=200,
                     layers='4+',
                     augmentation=augmentation)
 
@@ -470,7 +539,7 @@ if __name__ == '__main__':
         print("Fine tune all layers")
         model.train(dataset_train, dataset_val,
                     learning_rate=config.LEARNING_RATE / 10,
-                    epochs=160,
+                    epochs=240,
                     layers='all',
                     augmentation=augmentation)
 
