@@ -111,6 +111,9 @@ def display_instances(image, boxes, masks, class_ids, class_names,
         auto_show = True
 
     # Generate random colors
+    colors_dict = None
+    if isinstance(colors, dict):
+        colors_dict = colors
     colors = colors or random_colors(N)
 
     # Show area outside image boundaries.
@@ -122,7 +125,10 @@ def display_instances(image, boxes, masks, class_ids, class_names,
 
     masked_image = image.astype(np.uint32).copy()
     for i in range(N):
-        color = colors[i]
+        if colors_dict:
+            color = colors_dict[class_names[class_ids[i]]]
+        else:
+            color = colors[i]
 
         # Bounding box
         if not np.any(boxes[i]):
