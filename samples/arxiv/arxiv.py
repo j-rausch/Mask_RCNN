@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 import os
 import json
+import copy
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   # see issue #152\n",
 os.environ["CUDA_VISIBLE_DEVICES"]="0"#,1"#2,3,4,5,6,7"
 #os.environ["CUDA_VISIBLE_DEVICES"]="0"
@@ -46,6 +47,7 @@ import imgaug  # https://github.com/aleju/imgaug (pip3 install imageaug)
 import zipfile
 import urllib.request
 import shutil
+import skimage
 
 # Root directory of the project
 ROOT_DIR = os.path.abspath("../../")
@@ -340,6 +342,32 @@ class ArxivDataset(utils.Dataset):
         return m
 
 
+
+def build_arxiv_results(dataset, image_ids, rois, class_ids, scores, masks):
+    # If no results, return an empty list
+    if rois is None:
+        return []
+
+    results = []
+    for image_id in image_ids:
+        # Loop through detections
+        for i in range(rois.shape[0]):
+            class_id = class_ids[i]
+            score = scores[i]
+            bbox = np.around(rois[i], 1)
+            mask = masks[:, :, i]
+
+            result = {
+                "image_id": image_id,
+                "category_id": dataset.get_source_class_id(class_id, "arxiv"),
+                "bbox": [bbox[1], bbox[0], bbox[3] - bbox[1], bbox[2] - bbox[0]],
+                "score": score,
+                "segmentation": maskUtils.encode(np.asfortranarray(mask))
+            }
+            results.append(result)
+    return results
+
+
 #############################################################
 ##  ARXIV Evaluation
 #############################################################
@@ -460,6 +488,11 @@ if __name__ == '__main__':
     # Configurations
     if args.command == "train":
         config = ArxivConfig()
+    elif args.command == "eval":
+        config = ArxivConfig()
+        config.IMAGES_PER_GPU =1 
+        config.GPU_COUNT=1
+        config.BATCH_SIZE=1
     else:
         class InferenceConfig(ArxivConfig):
             # Set batch size to 1 since we'll be running inference on
@@ -489,7 +522,7 @@ if __name__ == '__main__':
         model_path = model.get_imagenet_weights()
     else:
         model_path = args.model
-
+#
     # Load weights
     print("Loading weights ", model_path)
     model.load_weights(model_path, by_name=True)
@@ -513,7 +546,12 @@ if __name__ == '__main__':
 
         # Image Augmentation
         # Right/Left flip 50% of the time
-        augmentation = imgaug.augmenters.Flipud(0.2)
+        #augmentation = imgaug.augmenters.Flipud(0.5)
+        augmentation = imgaug.augmenters.SomeOf((0,3),
+                    [imgaug.augmenters.Fliplr(0.25),
+                    imgaug.augmenters.Flipud(0.5),
+                    imgaug.augmenters.GaussianBlur(sigma=(0.0, 3.0))
+                    ])
 
         # *** This training schedule is an example. Update to your needs ***
 
@@ -542,6 +580,110 @@ if __name__ == '__main__':
                     epochs=240,
                     layers='all',
                     augmentation=augmentation)
+    elif args.command == 'eval':
+        print('doing zurich evaluation..')
+        dataset_eval_root = args.dataset
+        dataset_eval_json_path = os.path.join(dataset_eval_root, 'test_images_zurich.json')
+        with open(dataset_eval_json_path, 'r') as fp:
+            dataset_eval_list = json.load(fp)
+       
+        eval_output_path = os.path.join(dataset_eval_root, 'eval' )
+        eval_output_json_path = os.path.join(dataset_eval_root, 'eval_results_'+os.path.splitext(os.path.basename(model_path))[0]+'.json')    
+        eval_results_list = []
+        print('json path: {}'.format(eval_output_json_path))
+        debug_limit = 2
+        counter = 0
+        for test_doc in dataset_eval_list:
+            test_doc_id = test_doc['id']
+            test_doc_image_folder = os.path.join(dataset_eval_root, test_doc['images_dir'])
+            test_doc_images = [x for x in os.listdir(test_doc_image_folder) if x.endswith('.png')]
+            output_images_path = os.path.join(eval_output_path, str(test_doc_id))
+    
+            #print('test images: {}'.format(test_doc_images))
+            #print('output_images path: {}'.format(output_images_path))
+            current_results_entry = copy.deepcopy(test_doc)
+            
+            for doc_image in test_doc_images:
+                #print('current image: {}'.format(doc_image))\
+                current_page = int(doc_image.split('.png')[0][-3:])
+
+                #print('current results entry page: {}'.format(current_page))
+                image_path = os.path.join(test_doc_image_folder, doc_image)
+                img = skimage.io.imread(image_path) 
+                if img.ndim != 3:
+                    img = skimage.color.gray2rgb(image)
+                if img.shape[-1] == 4:
+                    img = image[..., :3]
+                image, window, scale, padding, crop = utils.resize_image(
+                    img,
+                    min_dim=config.IMAGE_MIN_DIM,
+                    min_scale=config.IMAGE_MIN_SCALE,
+                    max_dim=config.IMAGE_MAX_DIM,
+                    mode=config.IMAGE_RESIZE_MODE)
+                #Run object detection
+                print('getting results')
+                results = model.detect([image], verbose=1)
+                print('saving results to dict')
+                r = results[0]
+                
+                if not 'results' in current_results_entry:
+                    #current_results_entry['results']['page'] = current_page
+                    current_results_entry['results'] = {current_page: {'page': current_page, 'rois':r['rois'].tolist(), 'class_ids':r['class_ids'].tolist(), 'scores':r['scores'].tolist()}}
+                else:
+                    current_results_entry['results'][current_page] = {'page': current_page, 'rois':r['rois'].tolist(), 'class_ids':r['class_ids'].tolist(), 'scores':r['scores'].tolist()}
+
+            eval_results_list.append(current_results_entry)
+
+            counter += 1
+            print('processed doc nr: {}'.format(counter))
+#            if counter > debug_limit:
+#                break
+        print('saving json')
+        with open(eval_output_json_path, 'w') as fp:
+            json.dump(eval_results_list, fp, indent=1)
+ 
+            
+    elif args.command == 'evalarxiv':
+        logger.info("Creating test dataset")
+        dataset_val = ArxivDataset()
+        dataset_val.load_arxiv(args.dataset, "test")
+        dataset_val.prepare()
+        limit = 100
+
+        image_ids = dataset.image_ids
+
+        # Limit to a subset
+        if limit:
+            image_ids = image_ids[:limit]
+
+        # Get corresponding COCO image IDs.
+        arxiv_image_ids = [dataset.image_info[id]["id"] for id in image_ids]
+
+        results = []
+        for i, image_id in enumerate(image_ids):
+            # Load image
+            image = dataset.load_image(image_id)
+
+            # Run detection
+            t = time.time()
+            r = model.detect([image], verbose=0)[0]
+            t_prediction += (time.time() - t)
+
+            # Convert results to COCO format
+            # Cast masks to uint8 because COCO tools errors out on bool
+            image_results = build_arxiv_results(dataset, arxiv_image_ids[i:i + 1],
+                                               r["rois"], r["class_ids"],
+                                               r["scores"],
+                                               r["masks"].astype(np.uint8))
+            results.extend(image_results)
+        
+
+
+        eval_output_json_path = os.path.join('eval_results_'+os.path.splitext(os.path.basename(model_path))[0]+'.json')    
+        print('json path: {}'.format(eval_output_json_path))
+
+        with open(eval_output_json_path, 'w') as fp:
+            json.dump(results, fp, indent=1)
 
     else:
         print("'{}' is not recognized. "

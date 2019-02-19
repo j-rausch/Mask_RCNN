@@ -71,7 +71,7 @@ def main():
 #            docs_with_tables.append(doc_id)
 
 
-    ids_train, ids_test = train_test_split(docs_with_tables,test_size=0.15,random_state=42)        
+    ids_train, ids_test = train_test_split(docs_with_tables,test_size=0.85,random_state=42)        
     id_with_pages_train = []
     for id_train in ids_train:
         id_with_pages_train.append([id_train,  sorted(list(doc_pages_with_tables[id_train]))])
