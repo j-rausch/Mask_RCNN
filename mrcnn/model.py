@@ -1231,33 +1231,41 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
     # Augmentation
     # This requires the imgaug lib (https://github.com/aleju/imgaug)
     if augmentation:
-        import imgaug
+        original_mask = mask
+        original_img = image
+        try:
+            import imgaug
 
-        # Augmenters that are safe to apply to masks
-        # Some, such as Affine, have settings that make them unsafe, so always
-        # test your augmentation on masks
-        MASK_AUGMENTERS = ["Sequential", "SomeOf", "OneOf", "Sometimes",
-                           "Fliplr", "Flipud", "CropAndPad",
-                           "Affine", "PiecewiseAffine"]
+            # Augmenters that are safe to apply to masks
+            # Some, such as Affine, have settings that make them unsafe, so always
+            # test your augmentation on masks
+            MASK_AUGMENTERS = ["Sequential", "SomeOf", "OneOf", "Sometimes",
+                               "Fliplr", "Flipud", "CropAndPad",
+                               "Affine", "PiecewiseAffine"]
 
-        def hook(images, augmenter, parents, default):
-            """Determines which augmenters to apply to masks."""
-            return augmenter.__class__.__name__ in MASK_AUGMENTERS
+            def hook(images, augmenter, parents, default):
+                """Determines which augmenters to apply to masks."""
+                return augmenter.__class__.__name__ in MASK_AUGMENTERS
 
-        # Store shapes before augmentation to compare
-        image_shape = image.shape
-        mask_shape = mask.shape
-        # Make augmenters deterministic to apply similarly to images and masks
-        det = augmentation.to_deterministic()
-        image = det.augment_image(image)
-        # Change mask to np.uint8 because imgaug doesn't support np.bool
-        mask = det.augment_image(mask.astype(np.uint8),
-                                 hooks=imgaug.HooksImages(activator=hook))
-        # Verify that shapes didn't change
-        assert image.shape == image_shape, "Augmentation shouldn't change image size"
-        assert mask.shape == mask_shape, "Augmentation shouldn't change mask size"
-        # Change mask back to bool
-        mask = mask.astype(np.bool)
+            # Store shapes before augmentation to compare
+            image_shape = image.shape
+            mask_shape = mask.shape
+            # Make augmenters deterministic to apply similarly to images and masks
+            det = augmentation.to_deterministic()
+            image = det.augment_image(image)
+            # Change mask to np.uint8 because imgaug doesn't support np.bool
+            mask = det.augment_image(mask.astype(np.uint8),
+                                     hooks=imgaug.HooksImages(activator=hook))
+            # Verify that shapes didn't change
+            assert image.shape == image_shape, "Augmentation shouldn't change image size"
+            assert mask.shape == mask_shape, "Augmentation shouldn't change mask size"
+            # Change mask back to bool
+            mask = mask.astype(np.bool)
+        except (MemoryError, AssertionError) as e:
+            source_image_link = dataset.source_image_link(image_id)
+            print('augmentation error when processing {}'.format(source_image_link))
+            mask = original_mask
+            image = original_img 
 
     # Note that some boxes might be all zeros if the corresponding mask got cropped out.
     # and here is to filter them out
@@ -1698,17 +1706,22 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
             # Get GT bounding boxes and masks for image.
             image_id = image_ids[image_index]
 
-            # If the image source is not to be augmented pass None as augmentation
-            if dataset.image_info[image_id]['source'] in no_augmentation_sources:
-                image, image_meta, gt_class_ids, gt_boxes, gt_masks = \
-                load_image_gt(dataset, config, image_id, augment=augment,
-                              augmentation=None,
-                              use_mini_mask=config.USE_MINI_MASK)
-            else:
-                image, image_meta, gt_class_ids, gt_boxes, gt_masks = \
+
+            try:
+                # If the image source is not to be augmented pass None as augmentation
+                if dataset.image_info[image_id]['source'] in no_augmentation_sources:
+                    image, image_meta, gt_class_ids, gt_boxes, gt_masks = \
                     load_image_gt(dataset, config, image_id, augment=augment,
-                                augmentation=augmentation,
-                                use_mini_mask=config.USE_MINI_MASK)
+                                  augmentation=None,
+                                  use_mini_mask=config.USE_MINI_MASK)
+                else:
+                    image, image_meta, gt_class_ids, gt_boxes, gt_masks = \
+                        load_image_gt(dataset, config, image_id, augment=augment,
+                                    augmentation=augmentation,
+                                    use_mini_mask=config.USE_MINI_MASK)
+            except (OSError, FileNotFoundError):
+                print('error reading image or annotations of {}. skipping..'.format(dataset.image_info[image_id]['source']))
+                continue
 
             # Skip images that have no instances. This can happen in cases
             # where we train on a subset of classes and the image doesn't
@@ -2361,7 +2374,8 @@ class MaskRCNN():
         if os.name is 'nt':
             workers = 0
         else:
-            workers = min(multiprocessing.cpu_count(), 16)
+            #workers = min(multiprocessing.cpu_count(), 16)
+            workers = max(multiprocessing.cpu_count(), 32)
 
         self.keras_model.fit_generator(
             train_generator,
@@ -2371,7 +2385,7 @@ class MaskRCNN():
             callbacks=callbacks,
             validation_data=val_generator,
             validation_steps=self.config.VALIDATION_STEPS,
-            max_queue_size=100,
+            max_queue_size=200,
             workers=workers,
             use_multiprocessing=True,
         )
