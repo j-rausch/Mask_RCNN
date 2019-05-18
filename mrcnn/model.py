@@ -1705,6 +1705,7 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
             if shuffle and image_index == 0:
                 #use new random seed initialized with process id. otherwise all data generators feed data in same order
                 pid = multiprocessing.current_process()._identity[0]
+                print('using random seed {} in worker'.format(pid))
                 np.random.seed(pid)
                 #randst = np.random.mtrand.RandomState(pid)
                 np.random.shuffle(image_ids)
@@ -2381,8 +2382,8 @@ class MaskRCNN():
         if os.name is 'nt':
             workers = 0
         else:
-            #workers = min(multiprocessing.cpu_count(), 16)
-            workers = max(multiprocessing.cpu_count(), 32)
+            workers = 16
+            #workers = max(multiprocessing.cpu_count(), 32)
 
         self.keras_model.fit_generator(
             train_generator,
