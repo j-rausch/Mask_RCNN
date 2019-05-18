@@ -1707,6 +1707,7 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
                 pid = multiprocessing.current_process()._identity[0]
                 print('using random seed {} in worker'.format(pid))
                 np.random.seed(pid)
+                random.seed(pid)
                 #randst = np.random.mtrand.RandomState(pid)
                 np.random.shuffle(image_ids)
                 #print("ids have been shuffled by generator.pid: {},. first 20 ids: {}".format(pid, image_ids[:20]))
