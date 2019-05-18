@@ -22,6 +22,7 @@ import keras.backend as K
 import keras.layers as KL
 import keras.engine as KE
 import keras.models as KM
+import copy
 
 from mrcnn import utils
 
@@ -1231,8 +1232,8 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
     # Augmentation
     # This requires the imgaug lib (https://github.com/aleju/imgaug)
     if augmentation:
-        original_mask = mask
-        original_img = image
+        original_mask = copy.deepcopy(mask)
+        original_img = copy.deepcopy(image)
         try:
             import imgaug
 
@@ -1261,9 +1262,10 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
             assert mask.shape == mask_shape, "Augmentation shouldn't change mask size"
             # Change mask back to bool
             mask = mask.astype(np.bool)
-        except (MemoryError, AssertionError) as e:
+        except (AssertionError) as e:
             source_image_link = dataset.source_image_link(image_id)
-            print('augmentation error when processing {}'.format(source_image_link))
+            print('augmentation error when processing {}. skipping..'.format(source_image_link))
+#            raise
             mask = original_mask
             image = original_img 
 
@@ -1719,7 +1721,7 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
                         load_image_gt(dataset, config, image_id, augment=augment,
                                     augmentation=augmentation,
                                     use_mini_mask=config.USE_MINI_MASK)
-            except (OSError, FileNotFoundError):
+            except (OSError, FileNotFoundError, MemoryError, AssertionError):
                 print('error reading image or annotations of {}. skipping..'.format(dataset.image_info[image_id]['source']))
                 continue
 
