@@ -1703,7 +1703,12 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
             # Increment index to pick next image. Shuffle if at the start of an epoch.
             image_index = (image_index + 1) % len(image_ids)
             if shuffle and image_index == 0:
+                #use new random seed initialized with process id. otherwise all data generators feed data in same order
+                pid = multiprocessing.current_process()._identity[0]
+                np.random.seed(pid)
+                #randst = np.random.mtrand.RandomState(pid)
                 np.random.shuffle(image_ids)
+                #print("ids have been shuffled by generator.pid: {},. first 20 ids: {}".format(pid, image_ids[:20]))
 
             # Get GT bounding boxes and masks for image.
             image_id = image_ids[image_index]
