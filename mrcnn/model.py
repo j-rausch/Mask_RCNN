@@ -10,6 +10,7 @@ Written by Waleed Abdulla
 import os
 import random
 import datetime
+import time
 import re
 import math
 import logging
@@ -22,6 +23,7 @@ import keras.backend as K
 import keras.layers as KL
 import keras.engine as KE
 import keras.models as KM
+from functools import reduce
 import copy
 
 from mrcnn import utils
@@ -48,6 +50,8 @@ def log(text, array=None):
             array.max() if array.size else "",
             array.dtype))
     print(text)
+
+
 
 
 class BatchNorm(KL.BatchNormalization):
@@ -1210,9 +1214,19 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
         defined in MINI_MASK_SHAPE.
     """
     # Load image and mask
+    all_start = time.time()
+    start = time.time()
     image = dataset.load_image(image_id)
-    mask, class_ids = dataset.load_mask(image_id)
+    end = time.time()
+    time_for_image = end-start
+
+    start = time.time()
+    mask, class_ids, _ = dataset.load_mask(image_id)
+    end = time.time()
+    time_for_mask = end-start
     original_shape = image.shape
+
+    start = time.time()
     image, window, scale, padding, crop = utils.resize_image(
         image,
         min_dim=config.IMAGE_MIN_DIM,
@@ -1220,9 +1234,12 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
         max_dim=config.IMAGE_MAX_DIM,
         mode=config.IMAGE_RESIZE_MODE)
     mask = utils.resize_mask(mask, scale, padding, crop)
+    end = time.time()
+    time_for_resizes = end-start
 
     # Random horizontal flips.
     # TODO: will be removed in a future update in favor of augmentation
+    start = time.time()
     if augment:
         logging.warning("'augment' is deprecated. Use 'augmentation' instead.")
         if random.randint(0, 1):
@@ -1232,8 +1249,6 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
     # Augmentation
     # This requires the imgaug lib (https://github.com/aleju/imgaug)
     if augmentation:
-        original_mask = copy.deepcopy(mask)
-        original_img = copy.deepcopy(image)
         try:
             import imgaug
 
@@ -1264,10 +1279,12 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
             mask = mask.astype(np.bool)
         except (AssertionError) as e:
             source_image_link = dataset.source_image_link(image_id)
-            print('augmentation error when processing {}. skipping..'.format(source_image_link))
-#            raise
-            mask = original_mask
-            image = original_img 
+            print('ERROR: augmentation error when processing {}. skipping..'.format(source_image_link))
+            raise
+    end = time.time()
+    time_for_augment = end-start
+
+    start = time.time()
 
     # Note that some boxes might be all zeros if the corresponding mask got cropped out.
     # and here is to filter them out
@@ -1278,7 +1295,13 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
     # if the corresponding mask got cropped out.
     # bbox: [num_instances, (y1, x1, y2, x2)]
     bbox = utils.extract_bboxes(mask)
+    #as we generate the masks from bboxes, just use the source bboxes to generate this variable 
+    #bbox2 = utils.extract_bboxes_from_list(bboxes)
 
+    end = time.time()
+    time_for_bbox_extract = end-start
+
+    start = time.time()
     # Active classes
     # Different datasets have different classes, so track the
     # classes supported in the dataset of this image.
@@ -1293,6 +1316,13 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
     # Image meta data
     image_meta = compose_image_meta(image_id, original_shape, image.shape,
                                     window, scale, active_class_ids)
+
+    end = time.time()
+    time_for_minimize_mask = end-start
+
+    all_end = time.time()
+    time_for_all = all_end-all_start
+    #print('times to load image/mask/resize/augment/bboxextract/minimizemask/everything: {:.2f} / {:.2f} / {:.2f} / {:.2f}/ {:.2f}/ {:.2f}/ {:.2f}'.format(time_for_image, time_for_mask, time_for_resizes, time_for_augment, time_for_bbox_extract, time_for_minimize_mask, time_for_all))
 
     return image, image_meta, class_ids, bbox, mask
 
@@ -1697,6 +1727,7 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
                                              config.BACKBONE_STRIDES,
                                              config.RPN_ANCHOR_STRIDE)
 
+    times_per_step = []
     # Keras requires a generator to run indefinitely.
     while True:
         try:
@@ -1715,7 +1746,8 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
             # Get GT bounding boxes and masks for image.
             image_id = image_ids[image_index]
 
-
+            #print('worker {} trying to fetch image {} ({})'.format(pid, image_id, dataset.image_info[image_id]['path']))
+            start = time.time()
             try:
                 # If the image source is not to be augmented pass None as augmentation
                 if dataset.image_info[image_id]['source'] in no_augmentation_sources:
@@ -1728,10 +1760,16 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
                         load_image_gt(dataset, config, image_id, augment=augment,
                                     augmentation=augmentation,
                                     use_mini_mask=config.USE_MINI_MASK)
-            except (OSError, FileNotFoundError, MemoryError, AssertionError):
-                print('error reading image or annotations of {}. skipping..'.format(dataset.image_info[image_id]['source']))
+            except (OSError, FileNotFoundError, MemoryError, AssertionError, IndexError):
+                print('worker {} error reading image or annotations of {}. skipping..'.format(pid, dataset.image_info[image_id]['path']))
                 continue
-
+            end = time.time()
+            time_for_step = end-start
+            times_per_step.append(time_for_step)
+            avg10 = np.average(times_per_step[-25:] if len(times_per_step) >= 25 else times_per_step)
+            avg_time = reduce(lambda x, y: x + y, times_per_step) / len(times_per_step)
+            
+            print('worker {} fetched image {}, avg time: {:.2f}, time: {:.2f}'.format(pid, image_id,avg_time, time_for_step))
             # Skip images that have no instances. This can happen in cases
             # where we train on a subset of classes and the image doesn't
             # have any of the classes we care about.
