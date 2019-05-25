@@ -1669,9 +1669,13 @@ def generate_random_rois(image_shape, count, gt_class_ids, gt_boxes):
     return rois
 
 
+def decision(probability):
+    return random.random() < probability
+
+
 def data_generator(dataset, config, shuffle=True, augment=False, augmentation=None,
                    random_rois=0, batch_size=1, detection_targets=False,
-                   no_augmentation_sources=None):
+                   no_augmentation_sources=None, extra_dataset=None):
     """A generator that returns images and corresponding target class ids,
     bounding box deltas, and masks.
 
@@ -1715,6 +1719,10 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
     b = 0  # batch item index
     image_index = -1
     image_ids = np.copy(dataset.image_ids)
+    if extra_dataset is not None:
+        image_index2 = -1
+        image_ids2 = np.copy(extra_dataset.image_ids)
+
     error_count = 0
     no_augmentation_sources = no_augmentation_sources or []
 
@@ -1727,41 +1735,65 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
                                              config.BACKBONE_STRIDES,
                                              config.RPN_ANCHOR_STRIDE)
 
+    #use new random seed initialized with process id. otherwise all data generators feed data in same order
+    pid = multiprocessing.current_process()._identity[0]
+    print('using random seed {} in worker'.format(pid))
+    np.random.seed(pid)
+    random.seed(pid)
+
+    if extra_dataset is not None:
+        print('using dataloader that fetches from two datasets..')
     times_per_step = []
     # Keras requires a generator to run indefinitely.
     while True:
         try:
             # Increment index to pick next image. Shuffle if at the start of an epoch.
-            image_index = (image_index + 1) % len(image_ids)
-            if shuffle and image_index == 0:
-                #use new random seed initialized with process id. otherwise all data generators feed data in same order
-                pid = multiprocessing.current_process()._identity[0]
-                print('using random seed {} in worker'.format(pid))
-                np.random.seed(pid)
-                random.seed(pid)
-                #randst = np.random.mtrand.RandomState(pid)
-                np.random.shuffle(image_ids)
-                #print("ids have been shuffled by generator.pid: {},. first 20 ids: {}".format(pid, image_ids[:20]))
+            if extra_dataset is not None:
+                #choose which dataset to load from:
+                use_second_dataset = decision(probability=0.5)    
+           
+                if use_second_dataset is False: 
+                    #print('fetching from dataset 1')
+                    image_index = (image_index + 1) % len(image_ids)
+                    if shuffle and image_index == 0:
+                        np.random.shuffle(image_ids)
 
-            # Get GT bounding boxes and masks for image.
-            image_id = image_ids[image_index]
+                    # Get GT bounding boxes and masks for image.
+                    image_id = image_ids[image_index]
+                    current_dataset = dataset
+                else:
+                    #print('fetching from additional dataset 2')
+                    image_index2 = (image_index2 + 1) % len(image_ids2)
+                    if shuffle and image_index2 == 0:
+                        np.random.shuffle(image_ids2)
 
+                    # Get GT bounding boxes and masks for image.
+                    image_id = image_ids2[image_index2]
+                    current_dataset = extra_dataset
+            else:
+                image_index = (image_index + 1) % len(image_ids)
+                if shuffle and image_index == 0:
+                    np.random.shuffle(image_ids)
+
+                # Get GT bounding boxes and masks for image.
+                image_id = image_ids[image_index]
+                current_dataset = dataset
             #print('worker {} trying to fetch image {} ({})'.format(pid, image_id, dataset.image_info[image_id]['path']))
             start = time.time()
             try:
                 # If the image source is not to be augmented pass None as augmentation
-                if dataset.image_info[image_id]['source'] in no_augmentation_sources:
+                if current_dataset.image_info[image_id]['source'] in no_augmentation_sources:
                     image, image_meta, gt_class_ids, gt_boxes, gt_masks = \
-                    load_image_gt(dataset, config, image_id, augment=augment,
+                    load_image_gt(current_dataset, config, image_id, augment=augment,
                                   augmentation=None,
                                   use_mini_mask=config.USE_MINI_MASK)
                 else:
                     image, image_meta, gt_class_ids, gt_boxes, gt_masks = \
-                        load_image_gt(dataset, config, image_id, augment=augment,
+                        load_image_gt(current_dataset, config, image_id, augment=augment,
                                     augmentation=augmentation,
                                     use_mini_mask=config.USE_MINI_MASK)
             except (OSError, FileNotFoundError, MemoryError, AssertionError, IndexError):
-                print('worker {} error reading image or annotations of {}. skipping..'.format(pid, dataset.image_info[image_id]['path']))
+                print('worker {} error reading image or annotations of {}. skipping..'.format(pid, current_dataset.image_info[image_id]['path']))
                 continue
             end = time.time()
             time_for_step = end-start
@@ -1769,7 +1801,7 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
             avg10 = np.average(times_per_step[-25:] if len(times_per_step) >= 25 else times_per_step)
             avg_time = reduce(lambda x, y: x + y, times_per_step) / len(times_per_step)
             
-            print('worker {} fetched image {}, avg time: {:.2f}, time: {:.2f}'.format(pid, image_id,avg_time, time_for_step))
+            #print('worker {} fetched image {}, avg time: {:.2f}, time: {:.2f}'.format(pid, image_id,avg_time, time_for_step))
             # Skip images that have no instances. This can happen in cases
             # where we train on a subset of classes and the image doesn't
             # have any of the classes we care about.
@@ -1869,7 +1901,7 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
         except:
             # Log it and skip the image
             logging.exception("Error processing image {}".format(
-                dataset.image_info[image_id]))
+                current_dataset.image_info[image_id]))
             error_count += 1
             if error_count > 5:
                 raise
@@ -2336,7 +2368,7 @@ class MaskRCNN():
             "*epoch*", "{epoch:04d}")
 
     def train(self, train_dataset, val_dataset, learning_rate, epochs, layers,
-              augmentation=None, custom_callbacks=None, no_augmentation_sources=None):
+              augmentation=None, custom_callbacks=None, no_augmentation_sources=None, second_train_dataset=None):
         """Train the model.
         train_dataset, val_dataset: Training and validation Dataset objects.
         learning_rate: The learning rate to train with
@@ -2389,7 +2421,7 @@ class MaskRCNN():
         train_generator = data_generator(train_dataset, self.config, shuffle=True,
                                          augmentation=augmentation,
                                          batch_size=self.config.BATCH_SIZE,
-                                         no_augmentation_sources=no_augmentation_sources)
+                                         no_augmentation_sources=no_augmentation_sources, extra_dataset=second_train_dataset)
         val_generator = data_generator(val_dataset, self.config, shuffle=True,
                                        batch_size=self.config.BATCH_SIZE)
 
