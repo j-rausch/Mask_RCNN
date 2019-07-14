@@ -1221,7 +1221,7 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
     time_for_image = end-start
 
     start = time.time()
-    mask, class_ids, _ = dataset.load_mask(image_id)
+    mask, class_ids, _, ann_ids = dataset.load_mask(image_id)
     end = time.time()
     time_for_mask = end-start
     original_shape = image.shape
@@ -1291,6 +1291,7 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
     _idx = np.sum(mask, axis=(0, 1)) > 0
     mask = mask[:, :, _idx]
     class_ids = class_ids[_idx]
+    ann_ids = ann_ids[_idx]
     # Bounding boxes. Note that some boxes might be all zeros
     # if the corresponding mask got cropped out.
     # bbox: [num_instances, (y1, x1, y2, x2)]
@@ -1324,7 +1325,7 @@ def load_image_gt(dataset, config, image_id, augment=False, augmentation=None,
     time_for_all = all_end-all_start
     #print('times to load image/mask/resize/augment/bboxextract/minimizemask/everything: {:.2f} / {:.2f} / {:.2f} / {:.2f}/ {:.2f}/ {:.2f}/ {:.2f}'.format(time_for_image, time_for_mask, time_for_resizes, time_for_augment, time_for_bbox_extract, time_for_minimize_mask, time_for_all))
 
-    return image, image_meta, class_ids, bbox, mask
+    return image, image_meta, class_ids, bbox, mask, ann_ids
 
 
 def build_detection_targets(rpn_rois, gt_class_ids, gt_boxes, gt_masks, config):
@@ -1783,12 +1784,12 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
             try:
                 # If the image source is not to be augmented pass None as augmentation
                 if current_dataset.image_info[image_id]['source'] in no_augmentation_sources:
-                    image, image_meta, gt_class_ids, gt_boxes, gt_masks = \
+                    image, image_meta, gt_class_ids, gt_boxes, gt_masks, _ = \
                     load_image_gt(current_dataset, config, image_id, augment=augment,
                                   augmentation=None,
                                   use_mini_mask=config.USE_MINI_MASK)
                 else:
-                    image, image_meta, gt_class_ids, gt_boxes, gt_masks = \
+                    image, image_meta, gt_class_ids, gt_boxes, gt_masks, _ = \
                         load_image_gt(current_dataset, config, image_id, augment=augment,
                                     augmentation=augmentation,
                                     use_mini_mask=config.USE_MINI_MASK)
